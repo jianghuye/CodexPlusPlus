@@ -484,10 +484,19 @@ async fn try_inject(debug_port: u16, helper_port: u16) -> anyhow::Result<()> {
         .as_deref()
         .ok_or_else(|| anyhow::anyhow!("selected CDP target has no websocket URL"))?;
     let script = crate::assets::injection_script(helper_port);
+    let ctx = crate::routes::BridgeContext::core(Arc::new(crate::routes::CoreRuntimeService::new(
+        debug_port,
+        StatusStore::default(),
+    )));
     crate::bridge::install_bridge(
         websocket_url,
         crate::bridge::BRIDGE_BINDING_NAME,
-        Arc::new(|_, _| Box::pin(async { Ok(serde_json::json!({"status": "failed", "message": "Bridge routes are not available yet"})) })),
+        Arc::new(move |path, payload| {
+            let ctx = ctx.clone();
+            Box::pin(
+                async move { Ok(crate::routes::handle_bridge_request(ctx, &path, payload).await) },
+            )
+        }),
         &[script],
     )
     .await
