@@ -71,6 +71,11 @@ type DiagnosticsResult = CommandResult<{
   report: string;
 }>;
 
+type WatcherResult = CommandResult<{
+  enabled: boolean;
+  disabled_flag: string;
+}>;
+
 type InstallResult = CommandResult<{
   silent_shortcut: { installed: boolean; path: string | null };
   management_shortcut: { installed: boolean; path: string | null };
@@ -80,6 +85,10 @@ type UpdateResult = CommandResult<{
   currentVersion: string;
   latestVersion?: string | null;
   releaseSummary?: string;
+  assetName?: string | null;
+  assetUrl?: string | null;
+  updateAvailable?: boolean;
+  installedPath?: string;
   progress?: number;
 }>;
 
@@ -111,6 +120,7 @@ type State = {
   settings: SettingsResult | null;
   logs: LogsResult | null;
   diagnostics: DiagnosticsResult | null;
+  watcher: WatcherResult | null;
   update: UpdateResult | null;
   launchForm: {
     appPath: string;
@@ -130,6 +140,7 @@ export function mountApp(root: HTMLElement) {
     settings: null,
     logs: null,
     diagnostics: null,
+    watcher: null,
     update: null,
     launchForm: {
       appPath: "",
@@ -189,6 +200,14 @@ export function mountApp(root: HTMLElement) {
     }
   };
 
+  const refreshWatcher = async () => {
+    const result = await run(() => call<WatcherResult>("load_watcher_state"));
+    if (result) {
+      state.watcher = result;
+      state.notice = result.message;
+    }
+  };
+
   const navigate = async (route: Route) => {
     state.route = route;
     render();
@@ -196,6 +215,7 @@ export function mountApp(root: HTMLElement) {
     if (route === "settings") await refreshSettings();
     if (route === "logs") await refreshLogs();
     if (route === "diagnostics") await refreshDiagnostics();
+    if (route === "install") await refreshWatcher();
   };
 
   const launch = async () => {
@@ -251,6 +271,14 @@ export function mountApp(root: HTMLElement) {
     }
   };
 
+  const watcherAction = async (command: string) => {
+    const result = await run(() => call<WatcherResult>(command));
+    if (result) {
+      state.watcher = result;
+      state.notice = result.message;
+    }
+  };
+
   const checkUpdate = async () => {
     const result = await run(() => call<UpdateResult>("check_update"));
     if (result) {
@@ -260,7 +288,17 @@ export function mountApp(root: HTMLElement) {
   };
 
   const performUpdate = async () => {
-    const result = await run(() => call<UpdateResult>("perform_update"));
+    const release =
+      state.update?.latestVersion && state.update?.assetName && state.update?.assetUrl
+        ? {
+            version: state.update.latestVersion,
+            url: "",
+            body: state.update.releaseSummary ?? "",
+            asset_name: state.update.assetName,
+            asset_url: state.update.assetUrl,
+          }
+        : null;
+    const result = await run(() => call<UpdateResult>("perform_update", { release }));
     if (result) {
       state.update = result;
       state.notice = result.message;
@@ -417,6 +455,16 @@ export function mountApp(root: HTMLElement) {
         <button data-action="uninstall-entrypoints">卸载入口</button>
         <button data-action="repair-shortcuts">修复快捷方式</button>
       </div>
+      <div class="divider"></div>
+      <div class="status-table">
+        ${inlineStatusRow("Watcher 自动接管", state.watcher?.enabled ? "ok" : "disabled", state.watcher?.disabled_flag)}
+      </div>
+      <div class="toolbar">
+        <button data-action="install-watcher">安装 watcher</button>
+        <button data-action="uninstall-watcher">移除 watcher</button>
+        <button data-action="enable-watcher">启用</button>
+        <button data-action="disable-watcher">禁用</button>
+      </div>
     </div>
   `;
 
@@ -431,6 +479,7 @@ export function mountApp(root: HTMLElement) {
         <div class="metric-list">
           <div><span>状态</span><strong>${escapeHtml(update?.status ?? "not_checked")}</strong></div>
           <div><span>最新版本</span><strong>${escapeHtml(update?.latestVersion ?? "未检查")}</strong></div>
+          <div><span>资源</span><strong>${escapeHtml(update?.assetName ?? "-")}</strong></div>
           <div><span>进度</span><strong>${escapeHtml(String(update?.progress ?? 0))}%</strong></div>
         </div>
         <textarea readonly class="log-view">${escapeHtml(update?.releaseSummary || update?.message || "尚未检查更新。")}</textarea>
@@ -534,6 +583,10 @@ export function mountApp(root: HTMLElement) {
       "install-entrypoints": installEntrypoints,
       "uninstall-entrypoints": uninstallEntrypoints,
       "repair-shortcuts": repairShortcuts,
+      "install-watcher": () => watcherAction("install_watcher"),
+      "uninstall-watcher": () => watcherAction("uninstall_watcher"),
+      "enable-watcher": () => watcherAction("enable_watcher"),
+      "disable-watcher": () => watcherAction("disable_watcher"),
       "check-update": checkUpdate,
       "perform-update": performUpdate,
       "save-settings": saveSettings,
@@ -643,6 +696,7 @@ function statusLabel(status: string) {
     accepted: "已受理",
     not_checked: "未检查",
     not_implemented: "未实现",
+    disabled: "已禁用",
     unknown: "未知",
   };
   return labels[status] ?? status;

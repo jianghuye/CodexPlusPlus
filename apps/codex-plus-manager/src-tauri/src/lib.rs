@@ -14,6 +14,11 @@ pub fn run() {
             commands::repair_shortcuts,
             commands::check_update,
             commands::perform_update,
+            commands::load_watcher_state,
+            commands::install_watcher,
+            commands::uninstall_watcher,
+            commands::enable_watcher,
+            commands::disable_watcher,
             commands::read_latest_logs,
             commands::copy_diagnostics,
             commands::reset_settings

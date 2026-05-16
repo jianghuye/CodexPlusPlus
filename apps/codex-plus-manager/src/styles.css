@@ -336,6 +336,12 @@ textarea {
   margin-top: 12px;
 }
 
+.divider {
+  height: 1px;
+  margin: 14px 0;
+  background: #e5e9f0;
+}
+
 .field {
   display: grid;
   gap: 6px;

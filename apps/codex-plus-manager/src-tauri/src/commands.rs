@@ -83,6 +83,12 @@ pub struct DiagnosticsPayload {
     pub report: String,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct WatcherPayload {
+    pub enabled: bool,
+    pub disabled_flag: String,
+}
+
 #[tauri::command]
 pub fn backend_version() -> CommandResult<VersionPayload> {
     ok(
@@ -147,11 +153,8 @@ pub fn launch_codex_plus(request: LaunchRequest) -> CommandResult<Value> {
                 Err(error) => {
                     let status_store = StatusStore::default();
                     let latest = status_store.load_latest().ok().flatten();
-                    if should_write_manager_launch_failure(
-                        latest.as_ref(),
-                        debug_port,
-                        helper_port,
-                    ) {
+                    if should_write_manager_launch_failure(latest.as_ref(), debug_port, helper_port)
+                    {
                         let status = LaunchStatus {
                             status: "failed".to_string(),
                             message: format!("启动失败：{error}"),
@@ -221,27 +224,123 @@ pub fn repair_shortcuts() -> InstallActionResult {
 }
 
 #[tauri::command]
-pub fn check_update() -> CommandResult<Value> {
-    skipped(
-        "更新检查尚未接入发布源；Task 8 将实现真实更新检查。",
-        json!({
-            "currentVersion": codex_plus_core::version::VERSION,
-            "latestVersion": Value::Null,
-            "releaseSummary": "",
-            "progress": 0
-        }),
-    )
+pub async fn check_update() -> CommandResult<Value> {
+    match codex_plus_core::update::check_for_update(codex_plus_core::version::VERSION).await {
+        Ok(update) => {
+            let status = if update.update_available {
+                "ok"
+            } else {
+                "not_checked"
+            };
+            CommandResult {
+                status: status.to_string(),
+                message: if update.update_available {
+                    "发现可用更新。".to_string()
+                } else {
+                    "当前已是最新版本。".to_string()
+                },
+                payload: json!({
+                    "currentVersion": update.current_version,
+                    "latestVersion": update.latest_version,
+                    "releaseSummary": update.release_summary,
+                    "assetName": update.asset_name,
+                    "assetUrl": update.asset_url,
+                    "updateAvailable": update.update_available,
+                    "progress": 0
+                }),
+            }
+        }
+        Err(error) => failed(
+            &format!("检查更新失败：{error}"),
+            json!({
+                "currentVersion": codex_plus_core::version::VERSION,
+                "latestVersion": Value::Null,
+                "releaseSummary": "",
+                "assetName": Value::Null,
+                "assetUrl": Value::Null,
+                "updateAvailable": false,
+                "progress": 0
+            }),
+        ),
+    }
 }
 
 #[tauri::command]
-pub fn perform_update() -> CommandResult<Value> {
-    skipped(
-        "更新安装尚未实现；Task 8 将接入下载与安装流程。",
-        json!({
-            "currentVersion": codex_plus_core::version::VERSION,
-            "progress": 0
-        }),
-    )
+pub async fn perform_update(
+    release: Option<codex_plus_core::update::Release>,
+) -> CommandResult<Value> {
+    let Some(release) = release else {
+        return failed(
+            "请先检查更新并选择可下载的 Release asset。",
+            json!({
+                "currentVersion": codex_plus_core::version::VERSION,
+                "progress": 0
+            }),
+        );
+    };
+    let download_dir = codex_plus_core::paths::default_app_state_dir().join("updates");
+    match codex_plus_core::update::perform_update(&release, &download_dir).await {
+        Ok(result) => ok(
+            "更新包已下载，请从管理工具安装入口完成替换。",
+            json!({
+                "currentVersion": codex_plus_core::version::VERSION,
+                "latestVersion": result.release.version,
+                "releaseSummary": result.release.body,
+                "installedPath": result.installed_path.to_string_lossy(),
+                "progress": 100
+            }),
+        ),
+        Err(error) => failed(
+            &format!("安装更新失败：{error}"),
+            json!({
+                "currentVersion": codex_plus_core::version::VERSION,
+                "latestVersion": release.version,
+                "releaseSummary": release.body,
+                "progress": 0
+            }),
+        ),
+    }
+}
+
+#[tauri::command]
+pub fn load_watcher_state() -> CommandResult<WatcherPayload> {
+    ok("watcher 状态已加载。", watcher_payload())
+}
+
+#[tauri::command]
+pub fn install_watcher() -> CommandResult<WatcherPayload> {
+    let launcher_path = codex_plus_core::install::option_or_current_exe(
+        &None,
+        codex_plus_core::install::SILENT_BINARY,
+    );
+    match codex_plus_core::watcher::install_watcher(&launcher_path, default_debug_port()) {
+        Ok(()) => ok("watcher 已安装。", watcher_payload()),
+        Err(error) => failed(&format!("安装 watcher 失败：{error}"), watcher_payload()),
+    }
+}
+
+#[tauri::command]
+pub fn uninstall_watcher() -> CommandResult<WatcherPayload> {
+    match codex_plus_core::watcher::uninstall_watcher() {
+        Ok(()) => ok("watcher 已移除。", watcher_payload()),
+        Err(error) => failed(&format!("移除 watcher 失败：{error}"), watcher_payload()),
+    }
+}
+
+#[tauri::command]
+pub fn enable_watcher() -> CommandResult<WatcherPayload> {
+    match codex_plus_core::watcher::enable_watcher() {
+        Ok(()) => ok("watcher 已启用。", watcher_payload()),
+        Err(error) => failed(&format!("启用 watcher 失败：{error}"), watcher_payload()),
+    }
+}
+
+#[tauri::command]
+pub fn disable_watcher() -> CommandResult<WatcherPayload> {
+    match codex_plus_core::watcher::disable_watcher() {
+        Ok(()) => ok("watcher 已禁用。", watcher_payload()),
+        Err(error) => failed(&format!("禁用 watcher 失败：{error}"), watcher_payload()),
+    }
 }
 
 #[tauri::command]
@@ -456,6 +555,14 @@ fn diagnostics_report() -> String {
     .unwrap_or_else(|error| format!("诊断报告序列化失败：{error}"))
 }
 
+fn watcher_payload() -> WatcherPayload {
+    let flag = codex_plus_core::watcher::default_watcher_disabled_flag();
+    WatcherPayload {
+        enabled: !flag.exists(),
+        disabled_flag: flag.to_string_lossy().to_string(),
+    }
+}
+
 fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -516,14 +623,6 @@ fn ok<T: Serialize>(message: &str, payload: T) -> CommandResult<T> {
     }
 }
 
-fn skipped<T: Serialize>(message: &str, payload: T) -> CommandResult<T> {
-    CommandResult {
-        status: "not_implemented".to_string(),
-        message: message.to_string(),
-        payload,
-    }
-}
-
 fn failed<T: Serialize>(message: &str, payload: T) -> CommandResult<T> {
     CommandResult {
         status: "failed".to_string(),
@@ -573,9 +672,19 @@ mod tests {
     }
 
     #[test]
-    fn update_commands_are_honest_stubs() {
-        assert_eq!(check_update().status, "not_implemented");
-        assert_eq!(perform_update().status, "not_implemented");
+    fn update_install_requires_release_payload() {
+        let result = tauri::async_runtime::block_on(perform_update(None));
+
+        assert_eq!(result.status, "failed");
+        assert!(result.message.contains("请先检查更新"));
+    }
+
+    #[test]
+    fn watcher_state_returns_disabled_flag_path() {
+        let result = load_watcher_state();
+
+        assert_eq!(result.status, "ok");
+        assert!(result.payload.disabled_flag.contains("watcher.disabled"));
     }
 
     #[test]
